@@ -1,0 +1,1464 @@
+#region Using declarations
+using System;
+using NinjaTrader.Cbi;
+using NinjaTrader.Gui.Tools;
+using NinjaTrader.NinjaScript;
+using NinjaTrader.Data;
+using NinjaTrader.NinjaScript.Strategies;
+#endregion
+
+// namespace declaration goes here
+
+public class AmazingEA : Strategy
+{
+    #region Variables
+    // Add your strategy parameters here
+    private int MaxLoss = 5;
+    private int PointsAway = 80;
+    private int PointsGap = 2000;
+    private int ModifyGap = 10;
+    private int TP = 1000;
+    private int SL = 100;
+    private int NYear = 0;
+    private int NMonth = 0;
+    private int NDay = 0;
+    private int NHour = 0;
+    private int NMin = 0;
+    private int NSec = 0;
+    private int CTCBN = 0;
+    private int SecBPO = 20;
+    private int SecBAO = 5;
+    private int SecBMO = 0;
+    private int STWAN = 5;
+    private bool OCO = true;
+    private int BEPoints_1 = 0;
+    private int BEOffset_1 = 0;
+    private int BEPoints_2 = 0;
+    private int BEOffset_2 = 0;
+    private int BEPoints_3 = 0;
+    private int BEOffset_3 = 0;
+    private int BEPoints_4 = 0;
+    private int BEOffset_4 = 0;
+    private int BEPoints_5 = 0;
+    private int BEOffset_5 = 0;
+    private int BEPoints_6 = 0;
+    private int BEOffset_6 = 0;
+    private int BEPoints_7 = 0;
+    private int BEOffset_7 = 0;
+    private int TrailPoints = 0;
+    private int TrailOffset = 0;
+    private bool TrailImmediate = false;
+    private bool MM = false;
+    private double RiskPercent = 1.0;
+    private double Lots = 0.1;
+    private int MaxSpread = 0;
+    private bool AddSpreadToSL = true;
+    private bool SlipCheck = false;
+    private int MaxSlippage = 0;
+    private bool AllowBuys = true;
+    private bool AllowSells = true;
+    private bool UseBrokerTime = true;
+    private bool DeleteOnShutdown = true;
+    private string TradeLog = "AmazingEA";
+    private double h, l, ho, lo, hso, lso, htp, ltp, sp;
+    private int Magic, MinStopLevel, spread;
+    private DateTime secofday, secofnews;
+    private string TradeComment, logfile, tickfile;
+    private MqlDateTime brokerdt;
+    private MqlDateTime localdt;
+    #endregion
+
+    protected override void OnStateChange()
+    {
+        if (State == State.SetDefaults)
+        {
+            // Set strategy properties here
+            Description = "AmazingEA is a News Trading Straddle Program.";
+            Calculate = Calculate.OnEachTick;
+            IsOverlay = false;
+        }
+        else if (State == State.Configure)
+        {
+            // Add code to initialize strategy parameters here
+        }
+    }
+
+    protected override void OnBarUpdate()
+    {
+        // Add your strategy logic here
+        // This function is called on each new bar
+    }
+	
+	private string AddLeadingZero(int number, int digits)
+	{
+	    // Add leading zeros so that the resulting string has 'digits' length.
+	    string result = number.ToString("D" + digits);
+	    return result;
+	}
+	
+	private int CheckOrdersCondition()
+	{
+	    int result = 0;
+	    foreach (Order order in Account.Orders)
+	    {
+	        if (order.Instrument == Instrument && order.MarketPosition == MarketPosition.Flat && order.Tag == Magic)
+	        {
+	            // No open positions or pending orders for this magic number
+	            continue;
+	        }
+
+	        if (order.Instrument == Instrument && order.Tag == Magic)
+	        {
+	            if (order.OrderAction == OrderAction.BuyToOpen)
+	            {
+	                result += 1000;
+	            }
+	            else if (order.OrderAction == OrderAction.SellToOpen)
+	            {
+	                result += 100;
+	            }
+	            else if (order.OrderAction == OrderAction.Buy)
+	            {
+	                result += 10;
+	            }
+	            else if (order.OrderAction == OrderAction.Sell)
+	            {
+	                result += 1;
+	            }
+	        }
+	    }
+
+	    return result; // 0 means we have no trades
+	}
+
+	private int running = 0; // Declare this as a class-level variable
+
+	private void GetRunning()
+	{
+	    for (int i = 0; i < Account.Orders.Count; i++)
+	    {
+	        Order order = Account.Orders[i];
+	        if (order.Instrument == Instrument && order.Tag == Magic && (order.OrderAction == OrderAction.Buy || order.OrderAction == OrderAction.BuyToOpen))
+	        {
+	            if (running != order.OrderId)
+	            {
+	                running = order.OrderId;
+	            }
+	        }
+	    }
+	}
+
+	private void CountLoss()
+	{
+	    if (running != 0)
+	    {
+	        Order order = Account.GetOrderByUniqueId(running);
+	        if (order != null && order.OrderState == OrderState.Filled && order.Filled > 0)
+	        {
+	            double profitLoss = order.GetProfitLoss(Close[0]);
+	            if (profitLoss < 0)
+	            {
+	                loss++;
+	                running = 0;
+	            }
+	            else
+	            {
+	                running = 0;
+	            }
+	        }
+	    }
+	}
+
+	private void OpenBuyStop()
+	{
+	    int ticket;
+	    int tries = 0;
+	    if (!GlobalVariables.Contains("InTrade"))
+	    {
+	        while (tries < 3)
+	        {
+	            GlobalVariables.Set("InTrade", Time[0].ToString()); // Set Lock Indicator (Semaphore Set)
+	            IOrderMarket order = SubmitOrder(0, OrderAction.BuyToOpen, OrderType.StopMarket, LotsOptimized(), ho, 0, hso, htp, "", "", Color.Green);
+	            ticket = order.OrderId;
+	            Print("OpenBuyStop, OrderSend Executed, @ " + ho + " SL @ " + hso + " TP @ " + htp + " ticket=" + ticket);
+	            GlobalVariables.Remove("InTrade"); // Clear Lock Indicator (Semaphore Del)
+	            if (ticket <= 0)
+	            {
+	                Print("Error Occurred : " + GetLastError());
+	                tries++;
+	            }
+	            else
+	            {
+	                tries = 3;
+	            }
+	        }
+	    }
+	}
+	
+	private void OpenSellStop()
+	{
+	    int ticket;
+	    int tries = 0;
+	    if (!GlobalVariables.Contains("InTrade"))
+	    {
+	        while (tries < 3)
+	        {
+	            GlobalVariables.Set("InTrade", Time[0].ToString()); // Set Lock Indicator (Semaphore Set)
+	            IOrderMarket order = SubmitOrder(0, OrderAction.SellToOpen, OrderType.StopMarket, LotsOptimized(), lo, 0, lso, ltp, "", "", Color.Red);
+	            ticket = order.OrderId;
+	            Print("OpenSellStop, OrderSend Executed, @ " + lo + " SL @ " + lso + " TP @ " + ltp + " ticket=" + ticket);
+	            GlobalVariables.Remove("InTrade"); // Clear Lock Indicator (Semaphore Del)
+	            if (ticket <= 0)
+	            {
+	                Print("Error Occurred : " + GetLastError());
+	                tries++;
+	            }
+	            else
+	            {
+	                tries = 3;
+	            }
+	        }
+	    }
+	}
+
+	private void DoModify()
+	{
+	    double hbp, lbp, hsp, lsp;
+	    foreach (IOrder order in Orders)
+	    {
+	        if (order.Instrument == Instrument && order.Tag == Magic)
+	        {
+	            if (order.OrderAction == OrderAction.BuyToOpen && order.OrderType == OrderType.StopMarket)
+	            {
+	                hbp = order.AverageFillPrice + (ModifyGap * TickSize);
+	                lbp = order.AverageFillPrice - (ModifyGap * TickSize);
+	                if (ho > hbp || ho < lbp)
+	                {
+	                    Print("Buy Stop was @ " + order.AverageFillPrice + ", changed to " + ho);
+	                    if (!order.Modify(ho, hso, htp, order.Quantity, order.Tif, order.OcoId, Color.Green))
+	                    {
+	                        Print("Error Occurred : " + order.GetLastError());
+	                    }
+	                }
+	            }
+	            else if (order.OrderAction == OrderAction.SellToOpen && order.OrderType == OrderType.StopMarket)
+	            {
+	                hsp = order.AverageFillPrice + (ModifyGap * TickSize);
+	                lsp = order.AverageFillPrice - (ModifyGap * TickSize);
+	                if (lo > hsp || lo < lsp)
+	                {
+	                    Print("Sell Stop was @ " + order.AverageFillPrice + ", changed to " + lo);
+	                    if (!order.Modify(lo, lso, ltp, order.Quantity, order.Tif, order.OcoId, Color.Red))
+	                    {
+	                        Print("Error Occurred : " + order.GetLastError());
+	                    }
+	                }
+	            }
+	        }
+	    }
+	}
+
+	private void DoSlip()
+	{
+	    double slippage;
+	    double osl, sl, be, of, otp, tp;
+	    sp = Ask - Bid;
+	    foreach (IOrder order in Orders)
+	    {
+	        if (order.Instrument == Instrument && order.Tag == Magic)
+	        {
+	            otp = order.TakeProfitPrice;
+	            osl = order.StopLossPrice;
+
+	            if (order.OrderAction == OrderAction.BuyToOpen)
+	            {
+	                be = order.AverageFillPrice + ((BEPoints_1 + BEOffset_1) * TickSize);
+	                of = order.AverageFillPrice + (BEOffset_1 * TickSize);
+	                tp = order.AverageFillPrice + (TP * TickSize);
+	                slippage = Math.Floor((tp - otp) / TickSize); // slippage is how far Take Profit is out by
+
+	                if (MaxSlippage != 0 && slippage > MaxSlippage)  // if slippage exceeds maxslippage
+	                {
+	                    sl = order.AverageFillPrice - sp - (MinStopLevel * TickSize);
+	                    Print("Slippage of Buy Order was " + slippage + ", exceeded MaxSlippage of " + MaxSlippage + ", setting MinStop to " + sl);
+	                }
+	                else // if slippage does not exceed maxslippage
+	                {
+	                    if (slippage > 0)    // output slippage to log
+	                    {
+	                        Print("Slippage of Buy Order was " + slippage);
+	                    }
+
+	                    sl = order.AverageFillPrice - sp - (SL * TickSize);
+	                }
+
+	                if (Bid > tp) // if bid higher than buy take profit level, close
+	                {
+	                    Print("Take Profit of Buy Order Hit at " + tp + ", Closing at " + Bid);
+	                    order.Close(Bid);
+	                }
+
+	                if (BEPoints_1 == 0 || Bid < be)
+	                {
+	                    if (osl < sl) // is bid lower than break-even (open + BE) and
+	                    {
+	                        if (Bid < sl) // if bid lower than buy trade stop loss level, close
+	                        {
+	                            Print("Stop Loss of Buy Order Hit at " + sl + ", Closing at " + Bid);
+	                            order.Close(Bid);
+	                        }
+
+	                        if (Bid > sl) // if bid higher than sl, reset stop loss and take profit
+	                        {
+	                            Print("Stop Loss of Buy Order Reset to " + sl + ", Take Profit of Buy Order Reset to " + tp + " at " + Bid);
+	                            order.Modify(sl, tp);
+	                        }
+	                    }
+	                }
+
+	                if (BEPoints_1 != 0 && Bid > be)
+	                {
+	                    if (otp != tp) // is bid higher than break-even (open + BE) and
+	                    {
+	                        Print("Stop Loss of Buy Order Moved to BE at " + of + ", Take Profit of Buy Order Reset to " + tp + " at " + Bid);
+	                        order.Modify(of, tp);
+	                    }
+	                }
+	            }
+	            else if (order.OrderAction == OrderAction.SellToOpen)
+	            {
+	                be = order.AverageFillPrice - ((BEPoints_1 + BEOffset_1) * TickSize);
+	                of = order.AverageFillPrice - (BEOffset_1 * TickSize);
+	                tp = order.AverageFillPrice - (TP * TickSize);
+	                slippage = Math.Floor((otp - tp) / TickSize); // slippage is how far Take Profit is out by
+
+	                if (MaxSlippage != 0 && slippage > MaxSlippage)  // if slippage exceeds maxslippage
+	                {
+	                    sl = order.AverageFillPrice + sp + (MinStopLevel * TickSize);
+	                    Print("Slippage of Sell Order was " + slippage + ", exceeded MaxSlippage of " + MaxSlippage + ", setting MinStop to " + sl);
+	                }
+	                else // if slippage does not exceed maxslippage
+	                {
+	                    if (slippage > 0)    // output slippage to log
+	                    {
+	                        Print("Slippage of Sell Order was " + slippage);
+	                    }
+
+	                    sl = order.AverageFillPrice + sp + (SL * TickSize);
+	                }
+
+	                if (Ask < tp) // if ask lower than sell take profit level, close
+	                {
+	                    Print("Take Profit of Sell Order Hit at " + tp + ", Closing at " + Ask);
+	                    order.Close(Ask);
+	                }
+
+	                if (BEPoints_1 == 0 || Ask > be)
+	                {
+	                    if (osl > sl) // is ask higher than break-even (open - BE) and
+	                    {
+	                        if (Ask > sl) // if ask higher than sell trade stop loss level, close
+	                        {
+	                            Print("Stop Loss of Sell Order Hit at " + sl + ", Closing at " + Ask);
+	                            order.Close(Ask);
+	                        }
+
+	                        if (Ask < sl) // if ask lower than sl, reset stop loss and take profit
+	                        {
+	                            Print("Stop Loss of Sell Order Reset to " + sl + ", Take Profit of Sell Order Reset to " + tp + " at " + Ask);
+	                            order.Modify(sl, tp);
+	                        }
+	                    }
+	                }
+
+	                if (BEPoints_1 != 0 && Ask < be)
+	                {
+	                    if (otp != tp) // is take profit other than where it should be
+	                    {
+	                        Print("Stop Loss of Sell Order Moved to BE at " + of + ", Take Profit of Sell Order Reset to " + tp + " at " + Ask);
+	                        order.Modify(of, tp);
+	                    }
+	                }
+	            }
+	        }
+	    }
+	}
+	
+	private void DoTP()
+	{
+	    double slippage;
+	    double otp, tp;
+	    foreach (IOrder order in Orders)
+	    {
+	        if (order.Instrument == Instrument && order.Tag == Magic)
+	        {
+	            otp = order.TakeProfitPrice;
+
+	            if (order.OrderAction == OrderAction.BuyToOpen)
+	            {
+	                tp = order.AverageFillPrice + (TP * TickSize);
+	                slippage = Math.Floor((tp - otp) / TickSize); // slippage is how far Take Profit is out by
+
+	                if (slippage > 0) // output slippage to log
+	                {
+	                    Print("Slippage of Buy Order was " + slippage);
+	                }
+
+	                if (otp != tp) // is take profit other than where it should be
+	                {
+	                    if (Bid > tp) // if bid higher than buy take profit level, close
+	                    {
+	                        Print("Take Profit of Buy Order Hit at " + tp + ", Closing at " + Bid);
+	                        order.Close(Bid);
+	                    }
+
+	                    if (Bid < tp) // if bid lower than tp, reset take profit to open plus take profit setting
+	                    {
+	                        Print("Take Profit of Buy Order Reset to " + tp + ", at " + Bid);
+	                        order.Modify(order.StopLossPrice, tp);
+	                    }
+	                }
+	            }
+	            else if (order.OrderAction == OrderAction.SellToOpen)
+	            {
+	                tp = order.AverageFillPrice - (TP * TickSize);
+	                slippage = Math.Floor((otp - tp) / TickSize); // slippage is how far Take Profit is out by
+
+	                if (slippage > 0) // output slippage to log
+	                {
+	                    Print("Slippage of Sell Order was " + slippage);
+	                }
+
+	                if (otp != tp) // is take profit other than where it should be
+	                {
+	                    if (Ask < tp) // if ask lower than sell take profit level, close
+	                    {
+	                        Print("Take Profit of Sell Order Hit at " + tp + ", Closing at " + Ask);
+	                        order.Close(Ask);
+	                    }
+
+	                    if (Ask > tp) // if ask higher than sl, reset take profit set to open minus take profit setting
+	                    {
+	                        Print("Take Profit of Sell Order Reset to " + tp + ", at " + Ask);
+	                        order.Modify(order.StopLossPrice, tp);
+	                    }
+	                }
+	            }
+	        }
+	    }
+	}
+	
+	private void DoBE_1()
+	{
+	    double osl, be, of;
+	    foreach (IOrder order in Orders)
+	    {
+	        if (order.Instrument == Instrument && order.Tag == Magic)
+	        {
+	            osl = order.StopLossPrice;
+	            if (order.OrderAction == OrderAction.BuyToOpen)
+	            {
+	                be = order.AverageFillPrice + ((BEPoints_1 + BEOffset_1) * TickSize);
+	                of = order.AverageFillPrice + (BEOffset_1 * TickSize);
+
+	                if (Math.Floor(osl / TickSize) < Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Bid > be)
+	                    {
+	                        Print("Break Even of Buy Order set to " + of + " at " + Bid);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Bid < osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Buy Order Hit at " + osl + ", Closing at " + Bid);
+	                        order.Close(Bid);
+	                    }
+	                }
+	            }
+	            else if (order.OrderAction == OrderAction.SellToOpen)
+	            {
+	                be = order.AverageFillPrice - ((BEPoints_1 + BEOffset_1) * TickSize);
+	                of = order.AverageFillPrice - (BEOffset_1 * TickSize);
+	                if (Math.Floor(osl / TickSize) > Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Ask < be)
+	                    {
+	                        Print("Break Even of Sell Order set to " + of + " at " + Ask);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Ask > osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Sell Order Hit at " + osl + ", Closing at " + Ask);
+	                        order.Close(Ask);
+	                    }
+	                }
+	            }
+	        }
+	    }
+	}
+
+	private void DoBE_2()
+	{
+	    double osl, be, of;
+	    foreach (IOrder order in Orders)
+	    {
+	        if (order.Instrument == Instrument && order.Tag == Magic)
+	        {
+	            osl = order.StopLossPrice;
+	            if (order.OrderAction == OrderAction.BuyToOpen)
+	            {
+	                be = order.AverageFillPrice + ((BEPoints_2 + BEOffset_2) * TickSize);
+	                of = order.AverageFillPrice + (BEOffset_2 * TickSize);
+
+	                if (Math.Floor(osl / TickSize) < Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Bid > be)
+	                    {
+	                        Print("Break Even of Buy Order set to " + of + " at " + Bid);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Bid < osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Buy Order Hit at " + osl + ", Closing at " + Bid);
+	                        order.Close(Bid);
+	                    }
+	                }
+	            }
+	            else if (order.OrderAction == OrderAction.SellToOpen)
+	            {
+	                be = order.AverageFillPrice - ((BEPoints_2 + BEOffset_2) * TickSize);
+	                of = order.AverageFillPrice - (BEOffset_2 * TickSize);
+	                if (Math.Floor(osl / TickSize) > Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Ask < be)
+	                    {
+	                        Print("Break Even of Sell Order set to " + of + " at " + Ask);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Ask > osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Sell Order Hit at " + osl + ", Closing at " + Ask);
+	                        order.Close(Ask);
+	                    }
+	                }
+	            }
+	        }
+	    }
+	}
+
+	private void DoBE_3()
+	{
+	    double osl, be, of;
+	    foreach (IOrder order in Orders)
+	    {
+	        if (order.Instrument == Instrument && order.Tag == Magic)
+	        {
+	            osl = order.StopLossPrice;
+	            if (order.OrderAction == OrderAction.BuyToOpen)
+	            {
+	                be = order.AverageFillPrice + ((BEPoints_3 + BEOffset_3) * TickSize);
+	                of = order.AverageFillPrice + (BEOffset_3 * TickSize);
+
+	                if (Math.Floor(osl / TickSize) < Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Bid > be)
+	                    {
+	                        Print("Break Even of Buy Order set to " + of + " at " + Bid);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Bid < osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Buy Order Hit at " + osl + ", Closing at " + Bid);
+	                        order.Close(Bid);
+	                    }
+	                }
+	            }
+	            else if (order.OrderAction == OrderAction.SellToOpen)
+	            {
+	                be = order.AverageFillPrice - ((BEPoints_3 + BEOffset_3) * TickSize);
+	                of = order.AverageFillPrice - (BEOffset_3 * TickSize);
+	                if (Math.Floor(osl / TickSize) > Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Ask < be)
+	                    {
+	                        Print("Break Even of Sell Order set to " + of + " at " + Ask);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Ask > osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Sell Order Hit at " + osl + ", Closing at " + Ask);
+	                        order.Close(Ask);
+	                    }
+	                }
+	            }
+	        }
+	    }
+	}
+	
+	private void DoBE_4()
+	{
+	    double osl, be, of;
+	    foreach (IOrder order in Orders)
+	    {
+	        if (order.Instrument == Instrument && order.Tag == Magic)
+	        {
+	            osl = order.StopLossPrice;
+	            if (order.OrderAction == OrderAction.BuyToOpen)
+	            {
+	                be = order.AverageFillPrice + ((BEPoints_4 + BEOffset_4) * TickSize);
+	                of = order.AverageFillPrice + (BEOffset_4 * TickSize);
+
+	                if (Math.Floor(osl / TickSize) < Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Bid > be)
+	                    {
+	                        Print("Break Even of Buy Order set to " + of + " at " + Bid);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Bid < osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Buy Order Hit at " + osl + ", Closing at " + Bid);
+	                        order.Close(Bid);
+	                    }
+	                }
+	            }
+	            else if (order.OrderAction == OrderAction.SellToOpen)
+	            {
+	                be = order.AverageFillPrice - ((BEPoints_4 + BEOffset_4) * TickSize);
+	                of = order.AverageFillPrice - (BEOffset_4 * TickSize);
+	                if (Math.Floor(osl / TickSize) > Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Ask < be)
+	                    {
+	                        Print("Break Even of Sell Order set to " + of + " at " + Ask);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Ask > osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Sell Order Hit at " + osl + ", Closing at " + Ask);
+	                        order.Close(Ask);
+	                    }
+	                }
+	            }
+	        }
+	    }
+	}
+
+	private void DoBE_5()
+	{
+	    double osl, be, of;
+	    foreach (IOrder order in Orders)
+	    {
+	        if (order.Instrument == Instrument && order.Tag == Magic)
+	        {
+	            osl = order.StopLossPrice;
+	            if (order.OrderAction == OrderAction.BuyToOpen)
+	            {
+	                be = order.AverageFillPrice + ((BEPoints_5 + BEOffset_5) * TickSize);
+	                of = order.AverageFillPrice + (BEOffset_5 * TickSize);
+
+	                if (Math.Floor(osl / TickSize) < Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Bid > be)
+	                    {
+	                        Print("Break Even of Buy Order set to " + of + " at " + Bid);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Bid < osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Buy Order Hit at " + osl + ", Closing at " + Bid);
+	                        order.Close(Bid);
+	                    }
+	                }
+	            }
+	            else if (order.OrderAction == OrderAction.SellToOpen)
+	            {
+	                be = order.AverageFillPrice - ((BEPoints_5 + BEOffset_5) * TickSize);
+	                of = order.AverageFillPrice - (BEOffset_5 * TickSize);
+	                if (Math.Floor(osl / TickSize) > Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Ask < be)
+	                    {
+	                        Print("Break Even of Sell Order set to " + of + " at " + Ask);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Ask > osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Sell Order Hit at " + osl + ", Closing at " + Ask);
+	                        order.Close(Ask);
+	                    }
+	                }
+	            }
+	        }
+	    }
+	}
+	
+	private void DoBE_6()
+	{
+	    double osl, be, of;
+	    foreach (IOrder order in Orders)
+	    {
+	        if (order.Instrument == Instrument && order.Tag == Magic)
+	        {
+	            osl = order.StopLossPrice;
+	            if (order.OrderAction == OrderAction.BuyToOpen)
+	            {
+	                be = order.AverageFillPrice + ((BEPoints_6 + BEOffset_6) * TickSize);
+	                of = order.AverageFillPrice + (BEOffset_6 * TickSize);
+
+	                if (Math.Floor(osl / TickSize) < Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Bid > be)
+	                    {
+	                        Print("Break Even of Buy Order set to " + of + " at " + Bid);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Bid < osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Buy Order Hit at " + osl + ", Closing at " + Bid);
+	                        order.Close(Bid);
+	                    }
+	                }
+	            }
+	            else if (order.OrderAction == OrderAction.SellToOpen)
+	            {
+	                be = order.AverageFillPrice - ((BEPoints_6 + BEOffset_6) * TickSize);
+	                of = order.AverageFillPrice - (BEOffset_6 * TickSize);
+	                if (Math.Floor(osl / TickSize) > Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Ask < be)
+	                    {
+	                        Print("Break Even of Sell Order set to " + of + " at " + Ask);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Ask > osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Sell Order Hit at " + osl + ", Closing at " + Ask);
+	                        order.Close(Ask);
+	                    }
+	                }
+	            }
+	        }
+	    }
+	}
+	
+	private void DoBE_7()
+	{
+	    double osl, be, of;
+	    foreach (IOrder order in Orders)
+	    {
+	        if (order.Instrument == Instrument && order.Tag == Magic)
+	        {
+	            osl = order.StopLossPrice;
+	            if (order.OrderAction == OrderAction.BuyToOpen)
+	            {
+	                be = order.AverageFillPrice + ((BEPoints_7 + BEOffset_7) * TickSize);
+	                of = order.AverageFillPrice + (BEOffset_7 * TickSize);
+
+	                if (Math.Floor(osl / TickSize) < Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Bid > be)
+	                    {
+	                        Print("Break Even of Buy Order set to " + of + " at " + Bid);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Bid < osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Buy Order Hit at " + osl + ", Closing at " + Bid);
+	                        order.Close(Bid);
+	                    }
+	                }
+	            }
+	            else if (order.OrderAction == OrderAction.SellToOpen)
+	            {
+	                be = order.AverageFillPrice - ((BEPoints_7 + BEOffset_7) * TickSize);
+	                of = order.AverageFillPrice - (BEOffset_7 * TickSize);
+	                if (Math.Floor(osl / TickSize) > Math.Floor(of / TickSize) || osl == 0)
+	                {
+	                    if (Ask < be)
+	                    {
+	                        Print("Break Even of Sell Order set to " + of + " at " + Ask);
+	                        order.Modify(order.AverageFillPrice, of, order.TakeProfitPrice);
+	                    }
+	                    if (Ask > osl && osl != 0)
+	                    {
+	                        Print("Stop Loss of Sell Order Hit at " + osl + ", Closing at " + Ask);
+	                        order.Close(Ask);
+	                    }
+	                }
+	            }
+	        }
+	    }
+	}
+
+	private void DoTrail()
+	{
+	    double osl, to, tl;
+	    foreach (IOrder order in Orders)
+	    {
+	        if (order.Instrument == Instrument && order.Tag == Magic)
+	        {
+	            osl = order.StopLossPrice;
+	            if (order.OrderAction == OrderAction.BuyToOpen)
+	            {
+	                to = order.AverageFillPrice + ((TrailPoints + TrailOffset) * TickSize);
+	                tl = Bid - (TrailPoints * TickSize);
+	                if ((!TrailImmediate && Bid > to) || TrailImmediate)
+	                {
+	                    if (Math.Floor(osl / TickSize) < Math.Floor(tl / TickSize) || osl == 0)
+	                    {
+	                        Print("Trailing Stop of Buy Order set to " + tl + " at " + Bid);
+	                        order.Modify(order.AverageFillPrice, tl, order.TakeProfitPrice);
+	                    }
+	                }
+	                if (Bid < osl && osl != 0)
+	                {
+	                    Print("Stop Loss of Buy Order Hit at " + osl + ", Closing at " + Bid);
+	                    order.Close(Bid);
+	                }
+	            }
+	            else if (order.OrderAction == OrderAction.SellToOpen)
+	            {
+	                to = order.AverageFillPrice - ((TrailPoints + TrailOffset) * TickSize);
+	                tl = Ask + (TrailPoints * TickSize);
+	                if ((!TrailImmediate && Ask < to) || TrailImmediate)
+	                {
+	                    if (Math.Floor(osl / TickSize) > Math.Floor(tl / TickSize) || osl == 0)
+	                    {
+	                        Print("Trailing Stop of Sell Order set to " + tl + " at " + Ask);
+	                        order.Modify(order.AverageFillPrice, tl, order.TakeProfitPrice);
+	                    }
+	                }
+	                if (Ask > osl && osl != 0)
+	                {
+	                    Print("Stop Loss of Sell Order Hit at " + osl + ", Closing at " + Ask);
+	                    order.Close(Ask);
+	                }
+	            }
+	        }
+	    }
+	}
+
+	private void DeleteBuyStop()
+	{
+	    foreach (IOrder order in Orders)
+	    {
+	        if (order.Instrument == Instrument && order.Tag == Magic && order.OrderAction == OrderAction.BuyToOpen)
+	        {
+	            if (!order.Cancel())
+	            {
+	                Print("Error Occurred: " + order.Error);
+	            }
+	            else
+	            {
+	                Print("DeleteBuyStop, Order Cancelled");
+	            }
+	        }
+	    }
+	}
+
+	private void DeleteSellStop()
+	{
+	    foreach (IOrder order in Orders)
+	    {
+	        if (order.Instrument == Instrument && order.Tag == Magic && order.OrderAction == OrderAction.SellToOpen)
+	        {
+	            if (!order.Cancel())
+	            {
+	                Print("Error Occurred: " + order.Error);
+	            }
+	            else
+	            {
+	                Print("DeleteSellStop, Order Cancelled");
+	            }
+	        }
+	    }
+	}
+
+	private void OrdersDeleteAll()
+	{
+	    DeleteBuyStop();
+	    DeleteSellStop();
+	}
+	
+	private int loss = 0;
+
+	protected override void OnStateChange()
+	{
+	    if (State == State.SetDefaults)
+	    {
+	        Description = "Expert Advisor";
+	        Calculate = Calculate.OnEachTick;
+	        IsOverlay = false;
+	    }
+	    else if (State == State.Configure)
+	    {
+	        // Add your configuration settings here
+	        Magic = (NMonth * 100000000) + (NDay * 1000000) + (NHour * 10000) + (NMin * 100) + NSec; // Unique EA identifier
+
+	        TimeCurrent(brokerdt);
+	        TimeLocal(localdt);
+	        if (UseBrokerTime)
+	        {
+	            logfile = TradeLog + "-Log-" + Instrument.FullName + "-" + AddLeadingZero(brokerdt.Year, 4) + "-" + AddLeadingZero(brokerdt.Month, 2) + "-" + AddLeadingZero(brokerdt.Day, 2) + ".log";
+	            tickfile = TradeLog + "-Ticks-" + Instrument.FullName + "-" + AddLeadingZero(brokerdt.Year, 4) + "-" + AddLeadingZero(brokerdt.Month, 2) + "-" + AddLeadingZero(brokerdt.Day, 2) + ".csv";
+	        }
+	        else
+	        {
+	            logfile = TradeLog + "-Log-" + Instrument.FullName + "-" + AddLeadingZero(localdt.Year, 4) + "-" + AddLeadingZero(localdt.Month, 2) + "-" + AddLeadingZero(localdt.Day, 2) + ".log";
+	            tickfile = TradeLog + "-Ticks-" + Instrument.FullName + "-" + AddLeadingZero(localdt.Year, 4) + "-" + AddLeadingZero(localdt.Month, 2) + "-" + AddLeadingZero(localdt.Day, 2) + ".csv";
+	        }
+
+	        Print(logfile);
+	        Print(tickfile);
+
+	        MinStopLevel = (int)MarketDataType.STOPLEVEL; // Min. distance for Stops
+
+	        if (ModifyGap > 20)
+	        {
+	            ModifyGap = 20;
+	        }
+
+	        if (SL != 0 && SL < MinStopLevel)
+	        {
+	            SL = MinStopLevel;
+	        }
+
+	        if (TP != 0 && TP < MinStopLevel)
+	        {
+	            TP = MinStopLevel;
+	        }
+
+	        if (TrailPoints != 0 && TrailPoints < MinStopLevel)
+	        {
+	            TrailPoints = MinStopLevel;
+	        }
+
+	        if (BEPoints_1 != 0 && BEPoints_1 < MinStopLevel)
+	        {
+	            BEPoints_1 = MinStopLevel;
+	        }
+	        if (BEPoints_2 != 0 && BEPoints_2 < MinStopLevel)
+	        {
+	            BEPoints_2 = MinStopLevel;
+	        }
+	        if (BEPoints_3 != 0 && BEPoints_3 < MinStopLevel)
+	        {
+	            BEPoints_3 = MinStopLevel;
+	        }
+
+	        bool timerOk = EventSetMillisecondTimer(50);
+	        if (timerOk)
+	        {
+	            Print("Timer Started");
+	        }
+	        else
+	        {
+	            Print("Timer Failed");
+	            Print("Error Occurred: " + GetLastError());
+	        }
+	    }
+	}
+
+	private string logfile;
+	private string tickfile;
+	private int MinStopLevel;
+
+	protected override void OnTick()
+	{
+	    // Add your trading logic here
+	}
+
+	private string AddLeadingZero(int value, int width)
+	{
+	    return value.ToString("D" + width);
+	}
+	
+	protected override void OnMarketData(MarketDataEventArgs e)
+	{
+	    if (e.MarketDataType == MarketDataType.Last)
+	    {
+	        Main();
+
+	        if (secofday > (secofnews - SecBPO - 60) && secofday < (secofnews + STWAN + 60))
+	        {
+	            double sp = e.Ask - e.Bid;
+	            int spread = (int)Math.Round(sp / TickSize, 0);
+	            // Write to file logic can be added here
+	        }
+	    }
+	}
+
+	protected override void OnTimer()
+	{
+	    GetRunning();
+	    CountLoss();
+	    // Main(); // Uncomment this line if necessary
+	}
+
+	private string ErrorDescription(int error_code)
+	{
+	    string error_string;
+	    // ----
+	    switch (error_code)
+	    {
+	        // Codes returned from trade server
+	        case 0:
+	            error_string = "No error returned";
+	            break;
+	        case 1:
+	            error_string = "No error returned, but the result is unknown";
+	            break;
+	        case 2:
+	            error_string = "Common error";
+	            break;
+	        case 3:
+	            error_string = "Invalid trade parameters";
+	            break;
+	      case 4   :
+	         error_string="Trade server is busy";
+	         break;
+	      case 5   :
+	         error_string="Old version of the client terminal";
+	         break;
+	      case 6   :
+	         error_string="No connection with trade server";
+	         break;
+	      case 7   :
+	         error_string="Not enough rights";
+	         break;
+	      case 8   :
+	         error_string="Too frequent requests";
+	         break;
+	      case 9   :
+	         error_string="Malfunctional trade operation";
+	         break;
+	      case 64  :
+	         error_string="Account disabled";
+	         break;
+	      case 65  :
+	         error_string="Invalid account";
+	         break;
+	      case 128 :
+	         error_string="Trade timeout";
+	         break;
+	      case 129 :
+	         error_string="Invalid price";
+	         break;
+	      case 130 :
+	         error_string="Invalid stops";
+	         break;
+	      case 131 :
+	         error_string="Invalid trade volume";
+	         break;
+	      case 132 :
+	         error_string="Market is closed";
+	         break;
+	      case 133 :
+	         error_string="Trade is disabled";
+	         break;
+	      case 134 :
+	         error_string="Not enough money";
+	         break;
+	      case 135 :
+	         error_string="Price changed";
+	         break;
+	      case 136 :
+	         error_string="Off quotes";
+	         break;
+	      case 137 :
+	         error_string="Broker is busy";
+	         break;
+	      case 138 :
+	         error_string="Requote";
+	         break;
+	      case 139 :
+	         error_string="Order is locked";
+	         break;
+	      case 140 :
+	         error_string="Buy orders only allowed";
+	         break;
+	      case 141 :
+	         error_string="Too many requests";
+	         break;
+	      case 145 :
+	         error_string="Modification denied because order is too close to market";
+	         break;
+	      case 146 :
+	         error_string="Trade context is busy";
+	         break;
+	      case 147 :
+	         error_string="Expirations are denied by broker";
+	         break;
+	      case 148 :
+	         error_string="The amount of open and pending orders has reached the limit set by the broker";
+	         break;
+	      case 149 :
+	         error_string="An attempt to open an order opposite to the existing one when hedging is disabled";
+	         break;
+	      case 150 :
+	         error_string="An attempt to close an order contravening the FIFO rule";
+	         break;
+	      //---- MQL Errors
+	      case 4000:
+	         error_string="No error returned";
+	         break;
+	      case 4001:
+	         error_string="Wrong function pointer";
+	         break;
+	      case 4002:
+	         error_string="Array index is out of range";
+	         break;
+	      case 4003:
+	         error_string="No memory for function call stack";
+	         break;
+	      case 4004:
+	         error_string="Recursive stack overflow";
+	         break;
+	      case 4005:
+	         error_string="Not enough stack for parameter";
+	         break;
+	      case 4006:
+	         error_string="No memory for parameter string";
+	         break;
+	      case 4007:
+	         error_string="No memory for temp string";
+	         break;
+	      case 4008:
+	         error_string="Not initialized string";
+	         break;
+	      case 4009:
+	         error_string="Not initialized string in array";
+	         break;
+	      case 4010:
+	         error_string="No memory for array string";
+	         break;
+	      case 4011:
+	         error_string="Too long string";
+	         break;
+	      case 4012:
+	         error_string="Remainder from zero divide";
+	         break;
+	      case 4013:
+	         error_string="Zero divide";
+	         break;
+	      case 4014:
+	         error_string="Unknown command";
+	         break;
+	      case 4015:
+	         error_string="Wrong jump (never generated error)";
+	         break;
+	      case 4016:
+	         error_string="Not initialized array";
+	         break;
+	      case 4017:
+	         error_string="DLL calls are not allowed";
+	         break;
+	      case 4018:
+	         error_string="Cannot load library";
+	         break;
+	      case 4019:
+	         error_string="Cannot call function";
+	         break;
+	      case 4020:
+	         error_string="Expert function calls are not allowed";
+	         break;
+	      case 4021:
+	         error_string="Not enough memory for temp string returned from function";
+	         break;
+	      case 4022:
+	         error_string="System is busy (never generated error)";
+	         break;
+	      case 4023:
+	         error_string="DLL-function call critical error";
+	         break;
+	      case 4024:
+	         error_string="Internal error";
+	         break;
+	      case 4025:
+	         error_string="Out of memory";
+	         break;
+	      case 4026:
+	         error_string="Invalid pointer";
+	         break;
+	      case 4027:
+	         error_string="Too many formatters in the format function";
+	         break;
+	      case 4028:
+	         error_string="Parameters count exceeds formatters count";
+	         break;
+	      case 4029:
+	         error_string="Invalid array";
+	         break;
+	      case 4030:
+	         error_string="No reply from chart";
+	         break;
+	      case 4050:
+	         error_string="Invalid function parameters count";
+	         break;
+	      case 4051:
+	         error_string="Invalid function parameter value";
+	         break;
+	      case 4052:
+	         error_string="String function internal error";
+	         break;
+	      case 4053:
+	         error_string="Some array error";
+	         break;
+	      case 4054:
+	         error_string="Incorrect series array using";
+	         break;
+	      case 4055:
+	         error_string="Custom indicator error";
+	         break;
+	      case 4056:
+	         error_string="Arrays are incompatible";
+	         break;
+	      case 4057:
+	         error_string="Global variables processing error";
+	         break;
+	      case 4058:
+	         error_string="Global variable not found";
+	         break;
+	      case 4059:
+	         error_string="Function is not allowed in testing mode";
+	         break;
+	      case 4060:
+	         error_string="Function is not allowed for call";
+	         break;
+	      case 4061:
+	         error_string="Send mail error";
+	         break;
+	      case 4062:
+	         error_string="String parameter expected";
+	         break;
+	      case 4063:
+	         error_string="Integer parameter expected";
+	         break;
+	      case 4064:
+	         error_string="Double parameter expected";
+	         break;
+	      case 4065:
+	         error_string="Array as parameter expected";
+	         break;
+	      case 4066:
+	         error_string="Requested history data is in updating state";
+	         break;
+	      case 4067:
+	         error_string="Internal trade error";
+	         break;
+	      case 4068:
+	         error_string="Resource not found";
+	         break;
+	      case 4069:
+	         error_string="Resource not supported";
+	         break;
+	      case 4070:
+	         error_string="Duplicate resource";
+	         break;
+	      case 4071:
+	         error_string="Custom indicator cannot initialize";
+	         break;
+	      case 4072:
+	         error_string="Cannot load custom indicator";
+	         break;
+	      case 4099:
+	         error_string="End of file";
+	         break;
+	      case 4100:
+	         error_string="Some file error";
+	         break;
+	      case 4101:
+	         error_string="Wrong file name";
+	         break;
+	      case 4102:
+	         error_string="Too many opened files";
+	         break;
+	      case 4103:
+	         error_string="Cannot open file";
+	         break;
+	      case 4104:
+	         error_string="Incompatible access to a file";
+	         break;
+	      case 4105:
+	         error_string="No order selected";
+	         break;
+	      case 4106:
+	         error_string="Unknown symbol";
+	         break;
+	      case 4107:
+	         error_string="Invalid price";
+	         break;
+	      case 4108:
+	         error_string="Invalid ticket";
+	         break;
+	      case 4109:
+	         error_string="Trade is not allowed. Enable checkbox Allow live trading in the Expert Advisor properties";
+	         break;
+	      case 4110:
+	         error_string="Longs are not allowed. Check the Expert Advisor properties";
+	         break;
+	      case 4111:
+	         error_string="Shorts are not allowed. Check the Expert Advisor properties";
+	         break;
+	      case 4112:
+	         error_string="Automated trading by Expert Advisors/Scripts disabled by trade server";
+	         break;
+	      case 4200:
+	         error_string="Object already exists";
+	         break;
+	      case 4201:
+	         error_string="Unknown object property";
+	         break;
+	      case 4202:
+	         error_string="Object does not exist";
+	         break;
+	      case 4203:
+	         error_string="Unknown object type";
+	         break;
+	      case 4204:
+	         error_string="No object name";
+	         break;
+	      case 4205:
+	         error_string="Object coordinates error";
+	         break;
+	      case 4206:
+	         error_string="No specified subwindow";
+	         break;
+	      case 4207:
+	         error_string="Graphical object error";
+	         break;
+	      case 4210:
+	         error_string="Unknown chart property";
+	         break;
+	      case 4211:
+	         error_string="Chart not found";
+	         break;
+	      case 4212:
+	         error_string="Chart subwindow not found";
+	         break;
+	      case 4213:
+	         error_string="Chart indicator not found";
+	         break;
+	      case 4220:
+	         error_string="Symbol select error";
+	         break;
+	      case 4250:
+	         error_string="Notification error";
+	         break;
+	      case 4251:
+	         error_string="Notification parameter error";
+	         break;
+	      case 4252:
+	         error_string="Notifications disabled";
+	         break;
+	      case 4253:
+	         error_string="Notification send too frequent";
+	         break;
+	      case 5001:
+	         error_string="Too many opened files";
+	         break;
+	      case 5002:
+	         error_string="Wrong file name";
+	         break;
+	      case 5003:
+	         error_string="Too long file name";
+	         break;
+	      case 5004:
+	         error_string="Cannot open file";
+	         break;
+	      case 5005:
+	         error_string="Text file buffer allocation error";
+	         break;
+	      case 5006:
+	         error_string="Cannot delete file";
+	         break;
+	      case 5007:
+	         error_string="Invalid file handle (file closed or was not opened)";
+	         break;
+	      case 5008:
+	         error_string="Wrong file handle (handle index is out of handle table)";
+	         break;
+	      case 5009:
+	         error_string="File must be opened with FILE_WRITE flag";
+	         break;
+	      case 5010:
+	         error_string="File must be opened with FILE_READ flag";
+	         break;
+	      case 5011:
+	         error_string="File must be opened with FILE_BIN flag";
+	         break;
+	      case 5012:
+	         error_string="File must be opened with FILE_TXT flag";
+	         break;
+	      case 5013:
+	         error_string="File must be opened with FILE_TXT or FILE_CSV flag";
+	         break;
+	      case 5014:
+	         error_string="File must be opened with FILE_CSV flag";
+	         break;
+	      case 5015:
+	         error_string="File read error";
+	         break;
+	      case 5016:
+	         error_string="File write error";
+	         break;
+	      case 5017:
+	         error_string="String size must be specified for binary file";
+	         break;
+	      case 5018:
+	         error_string="Incompatible file (for string arrays-TXT, for others-BIN)";
+	         break;
+	      case 5019:
+	         error_string="File is directory not file";
+	         break;
+	      case 5020:
+	         error_string="File does not exist";
+	         break;
+	      case 5021:
+	         error_string="File cannot be rewritten";
+	         break;
+	      case 5022:
+	         error_string="Wrong directory name";
+	         break;
+	      case 5023:
+	         error_string="Directory does not exist";
+	         break;
+	      case 5024:
+	         error_string="Specified file is not directory";
+	         break;
+	      case 5025:
+	         error_string="Cannot delete directory";
+	         break;
+	      case 5026:
+	         error_string="Cannot clean directory";
+	         break;
+	      case 5027:
+	         error_string="Array resize error";
+	         break;
+	      case 5028:
+	         error_string="String resize error";
+	         break;
+	      case 5029:
+	         error_string="Structure contains strings or dynamic arrays";
+	         break;
+	      case 5200:
+	         error_string="Invalid URL";
+	         break;
+	      case 5201:
+	         error_string="Failed to connect to specified URL";
+	         break;
+	      case 5202:
+	         error_string="Timeout exceeded";
+	         break;
+	      case 5203:
+	         error_string="HTTP request failed";
+	         break;
+	      default:
+	         error_string="Unknown Error";
+	    }
+	    // ----
+	    return error_string;
+	}
+
+}

@@ -3,6 +3,9 @@ I want to create new strategy with 2 strategies. (RapidLimitOrderEntryStrategy, 
 
 RapidLimitOrderEntryStrategy has follow functions:
 
+
+it can help you to trade easily with ATM.
+if you click any point in the chart, open a trade with the price that you clicked.
 - in case SetOrderMethod is SpaceMouseLeftClick
 	if clicking mouse left  and pressing spacebar, open a trade with SL.
 
