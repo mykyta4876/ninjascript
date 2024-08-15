@@ -1,0 +1,815 @@
+#region Using declarations
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Xml.Serialization;
+using NinjaTrader.Cbi;
+using NinjaTrader.Gui;
+using NinjaTrader.Gui.Chart;
+using NinjaTrader.Gui.SuperDom;
+using NinjaTrader.Gui.Tools;
+using NinjaTrader.Data;
+using NinjaTrader.NinjaScript;
+using NinjaTrader.Core.FloatingPoint;
+using NinjaTrader.NinjaScript.Indicators;
+using NinjaTrader.NinjaScript.DrawingTools;
+#endregion
+
+//This namespace holds Strategies in this folder and is required. Do not change it. 
+namespace NinjaTrader.NinjaScript.Strategies
+{
+	public class CustomChartTraderPanel : Strategy
+	{
+		private System.Windows.Controls.Grid buttonGrid, chartGrid;
+		private NinjaTrader.Gui.Chart.ChartTab chartTab;
+		private Gui.Chart.ChartTrader chartTrader;
+		private int chartTraderStartColumn;
+		private NinjaTrader.Gui.Chart.Chart chartWindow;
+		private bool panelActive;	
+		private System.Windows.Controls.TabItem tabItem;
+
+		System.Windows.Controls.Button BuyMktButton;
+        System.Windows.Controls.Button SellMktButton;
+        System.Windows.Controls.Button SellAskButton;
+        System.Windows.Controls.Button BuyAskButton;
+        System.Windows.Controls.Button SellBidButton;
+        System.Windows.Controls.Button BuyBidButton;
+        System.Windows.Controls.Button RevButton;
+        System.Windows.Controls.Button CloseButton;
+        System.Windows.Controls.Button PnlLabel;
+        System.Windows.Controls.Button PosSizeLabel;
+        System.Windows.Controls.Button EntryLabel;
+        System.Windows.Controls.Button BidAskLabel;
+        System.Windows.Controls.Button RatioLabel;
+        System.Windows.Controls.Button TpLabel;
+        System.Windows.Controls.Button SlLabel;
+		
+        QuantityUpDown QuantQUD;
+		private int Quantity;	//DZ
+        int FontSize = 10;
+		
+		protected override void OnStateChange()
+		{
+			Print("OnStateChange start");
+			if (State == State.SetDefaults)
+			{
+				Description = @"CustomChartTraderPanel";
+				Name = "CustomChartTraderPanel";
+				Calculate = Calculate.OnEachTick;
+				EntriesPerDirection = 1;
+				EntryHandling = EntryHandling.AllEntries;
+				IsExitOnSessionCloseStrategy = true;
+				ExitOnSessionCloseSeconds = 30;
+				IsFillLimitOnTouch = false;
+				MaximumBarsLookBack = MaximumBarsLookBack.TwoHundredFiftySix;
+				OrderFillResolution = OrderFillResolution.Standard;
+				Slippage = 0;
+				StartBehavior = StartBehavior.WaitUntilFlat;
+				TimeInForce = TimeInForce.Gtc;
+				TraceOrders = false;
+				RealtimeErrorHandling = RealtimeErrorHandling.StopCancelClose;
+				StopTargetHandling = StopTargetHandling.PerEntryExecution;
+				BarsRequiredToTrade = 20;
+				IsInstantiatedOnEachOptimizationIteration = true;
+				IsUnmanaged = true;
+				
+        		Account = Account.All.FirstOrDefault(a => a.Name == "Sim101"); // Example to select a specific account, often the simulation for testing.
+				Quantity = 1;
+			}
+			else if (State == State.DataLoaded)
+			{
+				ClearOutputWindow();
+				panelActive = false;
+			}
+			else if (State == State.Historical)
+			{
+				if (ChartControl != null)
+				{
+					ChartControl.Dispatcher.InvokeAsync((Action)(() =>
+					{
+						CreateWPFControls();
+					}));
+				}
+			}
+			else if (State == State.Configure)
+			{
+				Account.OrderUpdate += OnOrderUpdate;
+			}
+			else if (State == State.Terminated)
+			{
+				if (ChartControl != null)
+				{
+					ChartControl.Dispatcher.InvokeAsync((Action)(() =>
+					{
+						DisposeWPFControls();
+					}));
+				}
+				
+                // Unsubscribe to avoid memory leaks
+                Account.OrderUpdate -= OnOrderUpdate;
+
+			}
+			Print("OnStateChange end");
+		}
+
+		#region Trade Methods
+		private void PlaceMarketOrder(bool isLong, string strType)
+		{
+			Print("PlaceMarketOrder start");
+			try
+			{
+				OrderType ot = strType == "mkt" ? OrderType.Market : OrderType.Limit;
+				OrderAction oa = isLong ? OrderAction.Buy : OrderAction.Sell;
+				double limitPrice = strType == "bid" ? GetCurrentBid() : (strType == "ask" ? GetCurrentAsk() : 0);
+				
+				//SubmitOrderUnmanaged(0, oa, ot, Quantity, limitPrice, 0, "", (isLong ? "Long " : "Short ") + " Entry");
+				var order = Account.CreateOrder(Instrument, oa, ot, TimeInForce.Day, Quantity, limitPrice, 0, string.Empty, (isLong ? "Long " : "Short ") + " Entry", null);
+    			Account.Submit(new[] { order });
+			}
+			catch(Exception ex)
+			{
+				Print($"PlaceMarketOrder error: {ex.Message} \n{ex.StackTrace}");
+			}
+			Print("PlaceMarketOrder end");
+		}
+		
+        private void ClosePositions()
+        {
+            Print("ClosePositions: start");
+		
+            // Flatten all positions manually
+            if (Position.MarketPosition == MarketPosition.Long)
+            {
+				var order = Account.CreateOrder(Instrument, OrderAction.SellShort, OrderType.Market, TimeInForce.Day, Position.Quantity, 0, 0, string.Empty, "Close Long Position", null);
+    			Account.Submit(new[] { order });
+                //SubmitOrderUnmanaged(0, OrderAction.SellShort, OrderType.Market, Position.Quantity, 0, 0, "", "Close Long Position");
+            }
+            else if (Position.MarketPosition == MarketPosition.Short)
+            {
+				var order = Account.CreateOrder(Instrument, OrderAction.Buy, OrderType.Market, TimeInForce.Day, Position.Quantity, 0, 0, string.Empty, "Close Short Position", null);
+    			Account.Submit(new[] { order });
+                //SubmitOrderUnmanaged(0, OrderAction.Buy, OrderType.Market, Position.Quantity, 0, 0, "", "Close Short Position");
+            }
+			
+			/*
+            // Close all open orders
+            foreach (Order order in Orders)
+            {
+				if (order.Name == "Close Long Position" || order.Name == "Close Short Position")
+					continue;
+				
+                CancelOrder(order);
+            }
+			*/
+			
+			AccountCloseOrdres();
+			
+            // Print a message to the output window
+            Print("ClosePositions: All trades closed.");
+        }
+		
+		private void AccountCloseOrdres()
+		{
+			Print("AccountCloseOrdres start");
+			
+			foreach (Order order in Account.Orders)
+			{
+                if (IsActiveOrder(order) && IsChartTraderOrder(order))
+                {
+					if (order.Name == "Close Long Position" || order.Name == "Close Short Position")
+						continue;
+					
+					Account.Cancel(new[] { order });
+				}
+			}
+			Print("AccountCloseOrdres end");
+		}
+		
+        private void RevPositions()
+        {
+            Print("RevPositions: start");
+			int qty = Position.Quantity;
+			MarketPosition pos = Position.MarketPosition;
+			
+            // Flatten all positions manually
+            if (pos == MarketPosition.Long)
+            {
+				var order = Account.CreateOrder(Instrument, OrderAction.SellShort, OrderType.Market, TimeInForce.Day, qty * 2, 0, 0, string.Empty, "Close Long Position", null);
+    			Account.Submit(new[] { order });
+                //SubmitOrderUnmanaged(0, OrderAction.SellShort, OrderType.Market, qty * 2, 0, 0, "", "Close Long Position");
+            }
+            else if (pos == MarketPosition.Short)
+            {
+				var order = Account.CreateOrder(Instrument, OrderAction.Buy, OrderType.Market, TimeInForce.Day, qty * 2, 0, 0, string.Empty, "Close Short Position", null);
+    			Account.Submit(new[] { order });
+                //SubmitOrderUnmanaged(0, OrderAction.Buy, OrderType.Market, qty * 2, 0, 0, "", "Close Short Position");
+            }
+			
+			/*
+            // Close all open orders
+            foreach (Order order in Orders)
+            {
+				if (order.Name == "Close Long Position" || order.Name == "Close Short Position")
+					continue;
+				
+                CancelOrder(order);
+            }
+			*/
+			
+			AccountCloseOrdres();
+			
+            // Print a message to the output window
+            Print("RevPositions: All trades closed.");
+        }
+		#endregion
+		
+		protected void CreateWPFControls()
+		{
+			Print("CreateWPFControls start");
+			chartWindow = System.Windows.Window.GetWindow(ChartControl.Parent) as Chart;
+			chartGrid = chartWindow.MainTabControl.Parent as System.Windows.Controls.Grid;
+			chartTrader = chartWindow.FindFirst("ChartWindowChartTraderControl") as Gui.Chart.ChartTrader;
+
+			buttonGrid = new System.Windows.Controls.Grid()
+            {
+                Name = "buttonGrid",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top,
+            };
+			
+			// Define rows and columns to match the button layout in the image
+			for (int i = 0; i < 4; i++)
+				buttonGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition() { Height = new GridLength(30) });
+			for (int j = 0; j < 2; j++)
+				buttonGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition() { Width = new GridLength(90) });
+
+			string[] buttonLabels = new string[] { "BuyMkt", "SellMkt", "BuyAsk", "SellAsk", "BuyBid", "SellBid", "Rev", "Close" };
+
+			BuyMktButton = new System.Windows.Controls.Button()
+			{
+				Content = "BuyMkt",
+				HorizontalAlignment = HorizontalAlignment.Left,
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = new Thickness(1),
+            	FontSize = FontSize,
+				Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+				Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255))
+			};
+			BuyMktButton.Click += BuyMktButtonClick;
+			System.Windows.Controls.Grid.SetRow(BuyMktButton, 0);
+			System.Windows.Controls.Grid.SetColumn(BuyMktButton, 0);
+			buttonGrid.Children.Add(BuyMktButton);
+
+			SellMktButton = new System.Windows.Controls.Button()
+			{
+				Content = "SellMkt",
+				HorizontalAlignment = HorizontalAlignment.Left,
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = new Thickness(1),
+            	FontSize = FontSize,
+				Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+				Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255))
+			};
+			SellMktButton.Click += SellMktButtonClick;
+			System.Windows.Controls.Grid.SetRow(SellMktButton, 0);
+			System.Windows.Controls.Grid.SetColumn(SellMktButton, 1);
+			buttonGrid.Children.Add(SellMktButton);
+
+			BuyAskButton = new System.Windows.Controls.Button()
+			{
+				Content = "BuyAsk",
+				HorizontalAlignment = HorizontalAlignment.Left,
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = new Thickness(1),
+            	FontSize = FontSize,
+				Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+				Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255))
+			};
+			BuyAskButton.Click += BuyAskButtonClick;
+			System.Windows.Controls.Grid.SetRow(BuyAskButton, 1);
+			System.Windows.Controls.Grid.SetColumn(BuyAskButton, 0);
+			buttonGrid.Children.Add(BuyAskButton);
+
+			SellAskButton = new System.Windows.Controls.Button()
+			{
+				Content = "SellAsk",
+				HorizontalAlignment = HorizontalAlignment.Left,
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = new Thickness(1),
+            	FontSize = FontSize,
+				Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+				Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255))
+			};
+			SellAskButton.Click += SellAskButtonClick;
+			System.Windows.Controls.Grid.SetRow(SellAskButton, 1);
+			System.Windows.Controls.Grid.SetColumn(SellAskButton, 1);
+			buttonGrid.Children.Add(SellAskButton);
+
+			BuyBidButton = new System.Windows.Controls.Button()
+			{
+				Content = "BuyBid",
+				HorizontalAlignment = HorizontalAlignment.Left,
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = new Thickness(1),
+            	FontSize = FontSize,
+				Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+				Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255))
+			};
+			BuyBidButton.Click += BuyBidButtonClick;
+			System.Windows.Controls.Grid.SetRow(BuyBidButton, 2);
+			System.Windows.Controls.Grid.SetColumn(BuyBidButton, 0);
+			buttonGrid.Children.Add(BuyBidButton);
+
+			SellBidButton = new System.Windows.Controls.Button()
+			{
+				Content = "SellBid",
+				HorizontalAlignment = HorizontalAlignment.Left,
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = new Thickness(1),
+            	FontSize = FontSize,
+				Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+				Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255))
+			};
+			SellBidButton.Click += SellBidButtonClick;
+			System.Windows.Controls.Grid.SetRow(SellBidButton, 2);
+			System.Windows.Controls.Grid.SetColumn(SellBidButton, 1);
+			buttonGrid.Children.Add(SellBidButton);
+
+			RevButton = new System.Windows.Controls.Button()
+			{
+				Content = "Rev",
+				HorizontalAlignment = HorizontalAlignment.Left,
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = new Thickness(1),
+            	FontSize = FontSize,
+				Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+				Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255))
+			};
+			RevButton.Click += RevButtonClick;
+			System.Windows.Controls.Grid.SetRow(RevButton, 3);
+			System.Windows.Controls.Grid.SetColumn(RevButton, 0);
+			buttonGrid.Children.Add(RevButton);
+
+			CloseButton = new System.Windows.Controls.Button()
+			{
+				Content = "Close",
+				HorizontalAlignment = HorizontalAlignment.Left,
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = new Thickness(1),
+            	FontSize = FontSize,
+				Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+				Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255))
+			};
+			CloseButton.Click += CloseButtonClick;
+			System.Windows.Controls.Grid.SetRow(CloseButton, 3);
+			System.Windows.Controls.Grid.SetColumn(CloseButton, 1);
+			buttonGrid.Children.Add(CloseButton);
+
+			// Add the "Flat", "Entry", and "PnL" labels
+			for (int i = 0; i < 2; i++)
+				buttonGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition() { Height = new GridLength(30) });
+
+			PosSizeLabel = new System.Windows.Controls.Button()
+			{
+				Content = "Flat",
+				HorizontalAlignment = HorizontalAlignment.Stretch,
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = new Thickness(1),
+                FontSize = 10,
+				Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+				Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255))
+			};
+			System.Windows.Controls.Grid.SetRow(PosSizeLabel, 4);
+			System.Windows.Controls.Grid.SetColumn(PosSizeLabel, 0);
+			buttonGrid.Children.Add(PosSizeLabel);
+
+			EntryLabel = new System.Windows.Controls.Button()
+			{
+				Content = "Entry",
+				HorizontalAlignment = HorizontalAlignment.Stretch,
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = new Thickness(1),
+                FontSize = 10,
+				Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+				Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255))
+			};
+			System.Windows.Controls.Grid.SetRow(EntryLabel, 4);
+			System.Windows.Controls.Grid.SetColumn(EntryLabel, 1);
+			buttonGrid.Children.Add(EntryLabel);
+
+			// Add the "Flat", "Entry", and "PnL" labels
+			for (int i = 0; i < 2; i++)
+				buttonGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition() { Height = new GridLength(30) });
+
+			PnlLabel = new System.Windows.Controls.Button()
+			{
+				Content = "PnL",
+				HorizontalAlignment = HorizontalAlignment.Stretch,
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = new Thickness(1),
+                FontSize = 10,
+				Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+				Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255))
+			};
+			System.Windows.Controls.Grid.SetRow(PnlLabel, 5);
+			System.Windows.Controls.Grid.SetColumn(PnlLabel, 1);
+			buttonGrid.Children.Add(PnlLabel);
+
+            QuantQUD = new QuantityUpDown()
+            {
+                Name = "QuantQUD",
+                Minimum = 1,
+                Value = Quantity,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                VerticalContentAlignment = VerticalAlignment.Stretch,
+            };
+            QuantQUD.ValueChanged += QuantQUDValueChanged;
+			System.Windows.Controls.Grid.SetRow(QuantQUD, 5);
+			System.Windows.Controls.Grid.SetColumn(QuantQUD, 0);
+			buttonGrid.Children.Add(QuantQUD);
+			
+			// Add the "Flat", "Entry", and "PnL" labels
+			for (int i = 0; i < 2; i++)
+				buttonGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition() { Height = new GridLength(30) });
+
+			TpLabel = new System.Windows.Controls.Button()
+			{
+				Content = "TP",
+				HorizontalAlignment = HorizontalAlignment.Stretch,
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = new Thickness(1),
+                FontSize = 10,
+				Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+				Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255))
+			};
+			System.Windows.Controls.Grid.SetRow(TpLabel, 6);
+			System.Windows.Controls.Grid.SetColumn(TpLabel, 0);
+			buttonGrid.Children.Add(TpLabel);
+
+			SlLabel = new System.Windows.Controls.Button()
+			{
+				Content = "SL",
+				HorizontalAlignment = HorizontalAlignment.Stretch,
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = new Thickness(1),
+                FontSize = 10,
+				Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+				Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255))
+			};
+			System.Windows.Controls.Grid.SetRow(SlLabel, 6);
+			System.Windows.Controls.Grid.SetColumn(SlLabel, 1);
+			buttonGrid.Children.Add(SlLabel);
+
+			if (TabSelected())
+				InsertWPFControls();
+
+			chartWindow.MainTabControl.SelectionChanged += TabChangedHandler;
+			Print("CreateWPFControls end");
+		}
+
+		private void DisposeWPFControls()
+		{
+			Print("DisposeWPFControls start");
+			if (chartWindow != null)
+			{
+				BuyMktButton.Click -= BuyMktButtonClick;
+				SellMktButton.Click -= SellMktButtonClick;
+				BuyAskButton.Click -= BuyAskButtonClick;
+				SellAskButton.Click -= SellAskButtonClick;
+				BuyBidButton.Click -= BuyBidButtonClick;
+				SellBidButton.Click -= SellBidButtonClick;
+				RevButton.Click -= RevButtonClick;
+				CloseButton.Click -= CloseButtonClick;
+	            QuantQUD.ValueChanged -= QuantQUDValueChanged;
+				chartWindow.MainTabControl.SelectionChanged -= TabChangedHandler;
+			}
+
+			RemoveWPFControls();
+			Print("DisposeWPFControls end");
+		}
+
+		private void InsertWPFControls()
+		{
+			Print("InsertWPFControls start");
+			if (panelActive)
+				return;
+
+			chartTraderStartColumn = System.Windows.Controls.Grid.GetColumn(chartTrader);
+
+			// a new column is added to the right of ChartTrader
+			chartGrid.ColumnDefinitions.Insert((chartTraderStartColumn + 2), new System.Windows.Controls.ColumnDefinition() { Width = new GridLength(200) });
+
+			// all items to the right of the ChartTrader are shifted to the right
+			for (int i = 0; i < chartGrid.Children.Count; i++)
+				if (System.Windows.Controls.Grid.GetColumn(chartGrid.Children[i]) > chartTraderStartColumn)
+					System.Windows.Controls.Grid.SetColumn(chartGrid.Children[i], System.Windows.Controls.Grid.GetColumn(chartGrid.Children[i]) + 1);
+
+			// and then we set our new grid to be within the new column of the chart grid (and on the same row as the MainTabControl)
+			System.Windows.Controls.Grid.SetColumn(buttonGrid, System.Windows.Controls.Grid.GetColumn(chartTrader) + 2);
+			System.Windows.Controls.Grid.SetRow(buttonGrid, System.Windows.Controls.Grid.GetRow(chartWindow.MainTabControl));
+
+			chartGrid.Children.Add(buttonGrid);
+
+			// let the script know the panel is active
+			panelActive = true;
+			Print("InsertWPFControls end");
+		}
+
+		protected override void OnBarUpdate() {
+			//Print("OnBarUpdate start");
+		    // Ensure the strategy runs in real-time or historical data
+		    if (State == State.Historical)
+		        return;
+			
+		    // Check if the ChartControl is available before updating the PnL label
+		    if (ChartControl != null)
+		    {
+		        TriggerCustomEvent(x => UpdateInfoLabelByBarUpdate(), null);
+		    }
+			//Print("OnBarUpdate end");
+		}
+
+        private bool IsActiveOrder(Order order)
+        {
+            // Check if the order is in an active state
+            return order.OrderState == OrderState.Working || 
+                   order.OrderState == OrderState.Accepted || 
+                   order.OrderState == OrderState.Submitted;
+        }
+
+        private bool IsChartTraderOrder(Order order)
+        {
+            // Implement your logic to determine if this order was placed by Chart Trader.
+            // For example, you might check some order properties or tags.
+            // Here we assume all orders are from Chart Trader for simplicity.
+            return true;
+        }
+        private void OnOrderUpdate(object sender, OrderEventArgs e)
+        {
+            // Handle order updates
+            Order order = e.Order;
+			if (order == null)
+			{
+			    Print("OnOrderUpdate: order == null");
+				return;
+			}
+			
+            // Process order details
+            Print($"Order Updated: {order.Name}, {order.OrderState}, {order.Quantity}, {order.Instrument.FullName}");
+			
+			
+			UpdateInfoLabelByOrderUpdate();
+			
+			MarketPosition pos = Position.MarketPosition;
+			double maxProfit = 0;
+			double maxLoss = 0;
+			
+			if (ChartControl != null)
+            {
+                ChartControl.Dispatcher.InvokeAsync((Action)(() =>
+                {
+					if (pos != MarketPosition.Flat)
+					{
+						double posPrice = Position.AveragePrice;
+            			foreach (Order order in Account.Orders)
+						{
+			                if (IsActiveOrder(order) && IsChartTraderOrder(order))
+			                {
+								Print($"Order : {order.Name}, {order.OrderState}, {order.OrderType}, {order.OrderAction}, {order.Quantity}, {order.Instrument.FullName}");
+								if (order.OrderType == OrderType.Limit)
+								{
+									if (order.OrderAction == OrderAction.Sell && pos == MarketPosition.Long)
+									{
+										maxProfit += (order.LimitPrice - posPrice) * order.Quantity * Instrument.MasterInstrument.PointValue;
+									}
+									else if (order.OrderAction == OrderAction.Buy && pos == MarketPosition.Short)
+									{
+										maxProfit += (posPrice - order.LimitPrice ) * order.Quantity * Instrument.MasterInstrument.PointValue;
+									}
+								}
+								else if (order.OrderType == OrderType.StopLimit)
+								{
+									if (order.OrderAction == OrderAction.Sell && pos == MarketPosition.Long)
+									{
+										maxLoss += (posPrice - order.StopPrice) * order.Quantity * Instrument.MasterInstrument.PointValue;
+									}
+									else if (order.OrderAction == OrderAction.Buy && pos == MarketPosition.Short)
+									{
+										maxLoss += (order.LimitPrice - posPrice) * order.Quantity * Instrument.MasterInstrument.PointValue;
+									}
+								}
+							}
+						}
+					}
+					
+					TpLabel.Content = pos == MarketPosition.Flat ? "TP" : maxProfit.ToString();
+					SlLabel.Content = pos == MarketPosition.Flat ? "SL" : maxLoss.ToString();
+                }));
+			}
+			
+			
+			Print("OnOrderUpdate end");
+        }
+		
+		/*
+        protected override void OnOrderUpdate(Order order, double limitPrice, double stopPrice, int quantity, int filled, double averageFillPrice, OrderState orderState, DateTime time, ErrorCode error, string nativeError)
+        //protected override void OnOrderUpdate(Order order, double limitPrice, double stopPrice, int quantity, int filled, double averageFillPrice, OrderState orderState, DateTime time)
+        {
+			Print("OnBarUpdate Sell orderState= " + orderState + ", OrderType=" + order.OrderType + ", OrderAction=" + order.OrderAction);
+			
+			UpdateInfoLabelByOrderUpdate();
+			
+			MarketPosition pos = Position.MarketPosition;
+			double maxProfit = 0;
+			double maxLoss = 0;
+			
+			if (ChartControl != null)
+            {
+                ChartControl.Dispatcher.InvokeAsync((Action)(() =>
+                {
+					if (pos != MarketPosition.Flat)
+					{
+						double posPrice = Position.AveragePrice;
+						if (orderState == OrderState.Submitted)
+						{
+							if (order.OrderType == OrderType.Limit)
+							{
+								if (order.OrderAction == OrderAction.Sell && pos == MarketPosition.Long)
+								{
+									maxProfit = (order.LimitPrice - posPrice) * order.Quantity * Instrument.MasterInstrument.PointValue;
+								}
+								else if (order.OrderAction == OrderAction.Buy && pos == MarketPosition.Short)
+								{
+									maxProfit = (posPrice - order.LimitPrice ) * order.Quantity * Instrument.MasterInstrument.PointValue;
+								}
+							}
+							else if (order.OrderType == OrderType.StopLimit)
+							{
+								if (order.OrderAction == OrderAction.Sell && pos == MarketPosition.Long)
+								{
+									maxLoss = (posPrice - order.StopPrice) * order.Quantity * Instrument.MasterInstrument.PointValue;
+								}
+								else if (order.OrderAction == OrderAction.Buy && pos == MarketPosition.Short)
+								{
+									maxLoss = (order.LimitPrice - posPrice) * order.Quantity * Instrument.MasterInstrument.PointValue;
+								}
+							}
+						}
+					}
+					
+					TpLabel.Content = pos == MarketPosition.Flat ? "TP" : maxProfit.ToString();
+					SlLabel.Content = pos == MarketPosition.Flat ? "SL" : maxLoss.ToString();
+                }));
+			}
+        }
+		*/
+		
+		private void RemoveWPFControls()
+		{
+			Print("RemoveWPFControls start");
+			if (!panelActive)
+				return;
+
+			// remove the column of our added grid
+			chartGrid.ColumnDefinitions.RemoveAt(System.Windows.Controls.Grid.GetColumn(buttonGrid));
+			// then remove the grid
+			chartGrid.Children.Remove(buttonGrid);
+
+			// if the childs column is 1 (so we can move it to 0) and the column is to the right of the column we are removing, shift it left
+			for (int i = 0; i < chartGrid.Children.Count; i++)
+				if (System.Windows.Controls.Grid.GetColumn(chartGrid.Children[i]) > 0 && System.Windows.Controls.Grid.GetColumn(chartGrid.Children[i]) > System.Windows.Controls.Grid.GetColumn(buttonGrid))
+					System.Windows.Controls.Grid.SetColumn(chartGrid.Children[i], System.Windows.Controls.Grid.GetColumn(chartGrid.Children[i]) - 1);
+
+			panelActive = false;
+			Print("RemoveWPFControls end");
+		}
+
+		private bool TabSelected()
+		{
+			Print("TabSelected start");
+			bool tabSelected = false;
+
+			// loop through each tab and see if the tab this indicator is added to is the selected item
+			foreach (System.Windows.Controls.TabItem tab in chartWindow.MainTabControl.Items)
+				if ((tab.Content as ChartTab).ChartControl == ChartControl && tab == chartWindow.MainTabControl.SelectedItem)
+					tabSelected = true;
+
+			Print("TabSelected end");
+			return tabSelected;
+		}
+
+		private void TabChangedHandler(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+		{
+			Print("TabChangedHandler start");
+			if (e.AddedItems.Count <= 0)
+				return;
+
+			tabItem = e.AddedItems[0] as System.Windows.Controls.TabItem;
+			if (tabItem == null)
+				return;
+
+			chartTab = tabItem.Content as NinjaTrader.Gui.Chart.ChartTab;
+			if (chartTab == null)
+				return;
+
+			if (TabSelected())
+				InsertWPFControls();
+			else
+				RemoveWPFControls();
+			Print("TabChangedHandler end");
+		}
+		
+        void BuyMktButtonClick(object sender, EventArgs e)
+        {
+			TriggerCustomEvent(x => PlaceMarketOrder(true, "mkt"), null);
+        }
+
+        void SellMktButtonClick(object sender, EventArgs e)
+        {
+			TriggerCustomEvent(x => PlaceMarketOrder(false, "mkt"), null);
+        }
+		
+		void SellAskButtonClick(object sender, EventArgs e)
+        {
+			TriggerCustomEvent(x => PlaceMarketOrder(false, "ask"), null);
+        }
+		
+		void BuyAskButtonClick(object sender, EventArgs e)
+        {
+			TriggerCustomEvent(x => PlaceMarketOrder(true, "ask"), null);
+        }
+		
+		void SellBidButtonClick(object sender, EventArgs e)
+        {
+			TriggerCustomEvent(x => PlaceMarketOrder(false, "bid"), null);
+        }
+		
+		void BuyBidButtonClick(object sender, EventArgs e)
+        {
+			TriggerCustomEvent(x => PlaceMarketOrder(true, "bid"), null);
+        }
+		
+		void CloseButtonClick(object sender, EventArgs e)
+        {
+			ClosePositions();
+        }
+		
+		void RevButtonClick(object sender, EventArgs e)
+        {
+			RevPositions();
+        }
+		
+		void QuantQUDValueChanged(object sender, EventArgs e)
+        {
+            if (ChartControl != null)
+            {
+                ChartControl.Dispatcher.InvokeAsync((Action)(() =>
+                {
+					Quantity = QuantQUD.Value;
+                }));
+            }
+        }
+		
+		void UpdateInfoLabelByOrderUpdate()
+		{
+			Print("UpdateInfoLabelByOrderUpdate start");
+			if (ChartControl != null)
+            {
+                ChartControl.Dispatcher.InvokeAsync((Action)(() =>
+                {
+					MarketPosition pos = Position.MarketPosition;
+					PosSizeLabel.Content = pos == MarketPosition.Flat ? "Flat" : Position.Quantity.ToString();
+					PosSizeLabel.Background = pos == MarketPosition.Long ? Brushes.Green : pos == MarketPosition.Short ? Brushes.Red : Brushes.Gray;
+					
+					EntryLabel.Content = pos == MarketPosition.Flat ? "Entry" : Position.AveragePrice.ToString();
+                }));
+            }
+			Print("UpdateInfoLabelByOrderUpdate end");
+		}
+		
+		void UpdateInfoLabelByBarUpdate()
+		{
+			Print("UpdateInfoLabelByBarUpdate start");
+		    // Ensure the ChartControl is available and the PnL label is ready for update
+		    if (ChartControl != null && PnlLabel != null)
+		    {
+		        // Use Dispatcher to update the UI asynchronously
+		        ChartControl.Dispatcher.InvokeAsync((Action)(() =>
+		        {
+		            double pnl = Position.GetUnrealizedProfitLoss(PerformanceUnit.Currency) / 2;
+					//double pnl = SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit - SystemPerformance.AllTrades.TradesPerformance.Currency.RealizedProfit;
+		            PnlLabel.Content = Position.MarketPosition == MarketPosition.Flat ? "PnL" : pnl.ToString();
+		            PnlLabel.Background = pnl > 0 ? Brushes.Green : pnl < 0 ? Brushes.Red : Brushes.Gray;
+		        }));
+		    }
+			Print("UpdateInfoLabelByBarUpdate end");
+		}
+	}
+}

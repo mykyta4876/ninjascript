@@ -1,0 +1,437 @@
+
+#region Using declarations
+using System;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+using NinjaTrader.Cbi;
+using NinjaTrader.Gui.Tools;
+using NinjaTrader.NinjaScript;
+using NinjaTrader.Data;
+using NinjaTrader.Gui.Chart;
+using NinjaTrader.NinjaScript.Strategies;
+using NinjaTrader.NinjaScript.Indicators;
+#endregion
+
+namespace NinjaTrader.NinjaScript.Strategies
+{
+    public class MNQTradingStrategy : Strategy
+    {
+        // Paramètres configurables
+        private double fastMultiplier = 2.2;
+        private double middleMultiplier = 2.6;
+        private double slowMultiplier = 5.0;
+        private int emaPeriod = 21;
+        private int takeProfitTicks = 40;
+        private int stopLossTicks = 40;
+        private int volume = 5;
+        private double dailyProfitLimit = 1000.0;
+        private double dailyLossLimit = 1000.0;
+        private int maxConsecutiveLosses = 5;
+        private bool doublePositionOnLoss = false;
+        private string[] newsTimes = { "14:30", "15:30", "16:30" };
+        private int stopTradingBeforeNewsMinutes = 10;
+        private int closePositionBeforeNewsMinutes = 1;
+        private bool alertIfDoubleLot = false;
+
+        private int consecutiveLosses = 0;
+        private double dailyProfit = 0.0;
+        private double dailyLoss = 0.0;
+
+        private TSSuperTrend fastSuperTrend;
+        private TSSuperTrend middleSuperTrend;
+        private TSSuperTrend slowSuperTrend;
+        private StochasticsFast fastStochastics;
+        private EMA ema;
+
+        protected override void OnStateChange()
+        {
+            if (State == State.SetDefaults)
+            {
+                Description = @"Stratégie de trading pour MNQ/NQ utilisant TSSuperTrend, Stochastics Fast et EMA";
+                Name = "MNQTradingStrategy";
+                Calculate = Calculate.OnEachTick;
+                IsOverlay = true;
+                IsInstantiatedOnEachOptimizationIteration = false;
+
+                // Paramètres par défaut
+                EmaPeriod = 21;
+                FastMultiplier = 2.2;
+                TakeProfitTicks = 40;
+                StopLossTicks = 40;
+                Volume = 5;
+                DailyProfitLimit = 1000.0;
+                DailyLossLimit = 1000.0;
+                MaxConsecutiveLosses = 3;
+                DoublePositionOnLoss = false;
+                NewsTimes = new string[] { "14:30", "15:30", "16:30" };
+                StopTradingBeforeNewsMinutes = 10;
+                ClosePositionBeforeNewsMinutes = 1;
+                AlertIfDoubleLot = false;
+            }
+            else if (State == State.Configure)
+            {
+                // Initialisation des indicateurs
+                fastSuperTrend = TSSuperTrend(SuperTrendMode.ATR, 3, fastMultiplier, MovingAverageType.HMA, 14, false, false, false);
+                middleSuperTrend = TSSuperTrend(SuperTrendMode.ATR, 3, middleMultiplier, MovingAverageType.HMA, 14, false, false, false);
+                slowSuperTrend = TSSuperTrend(SuperTrendMode.ATR, 3, slowMultiplier, MovingAverageType.HMA, 14, false, false, false);
+                fastStochastics = StochasticsFast(1, 4);
+                ema = EMA(emaPeriod);
+
+                AddChartIndicator(fastSuperTrend);
+                AddChartIndicator(middleSuperTrend);
+                AddChartIndicator(slowSuperTrend);
+                AddChartIndicator(fastStochastics);
+                AddChartIndicator(ema);
+            }
+        }
+		
+		
+// Code Mis à Jour avec des Logs Détaillés
+
+	protected override void OnBarUpdate()
+{
+    if (CurrentBar < BarsRequiredToTrade)
+        return;
+
+    // Imprimer les valeurs pour debug
+    Print("Close[0]: " + Close[0]);
+    Print("fastSuperTrend.UpTrend[0]: " + fastSuperTrend.UpTrend[0]);
+    Print("middleSuperTrend.UpTrend[0]: " + middleSuperTrend.UpTrend[0]);
+    Print("slowSuperTrend.UpTrend[0]: " + slowSuperTrend.UpTrend[0]);
+    Print("fastStochastics.D[0]: " + fastStochastics.D[0]);
+    Print("ema[0]: " + ema[0]);
+
+    // Condition d'entrée pour achat (uniquement la première condition)
+    bool longCondition1 = Close[0] > fastSuperTrend.UpTrend[0] 
+                          && Close[0] > middleSuperTrend.UpTrend[0] 
+                          && fastStochastics.D[0] < 20 
+                          && Close[0] > ema[0];
+    // bool longCondition2 = Close[0] > fastSuperTrend.UpTrend[0] 
+    //                       && Close[0] > middleSuperTrend.UpTrend[0] 
+    //                       && CrossAbove(Close, slowSuperTrend.UpTrend, 1);
+
+    // Imprimer les résultats de la condition
+    Print("longCondition1: " + longCondition1);
+    // Print("longCondition2: " + longCondition2);
+
+    // Entrée en position longue
+    if (longCondition1 && Position.MarketPosition != MarketPosition.Long)
+    {
+        Print("Entering Long Position");
+        EnterLong(volume, "Long Entry");
+    }
+
+    // Conditions d'entrée pour vente
+    bool shortCondition1 = Close[0] < fastSuperTrend.DownTrend[0] 
+                           && Close[0] < middleSuperTrend.DownTrend[0] 
+                           && fastStochastics.D[0] > 80 
+                           && Close[0] < ema[0];
+    // bool shortCondition2 = Close[0] < fastSuperTrend.DownTrend[0] 
+    //                        && Close[0] < middleSuperTrend.DownTrend[0] 
+    //                        && CrossBelow(Close, slowSuperTrend.DownTrend, 1);
+
+    // Imprimer les résultats des conditions de vente
+    Print("shortCondition1: " + shortCondition1);
+    // Print("shortCondition2: " + shortCondition2);
+
+    // Entrée en position courte
+    if (shortCondition1 && Position.MarketPosition != MarketPosition.Short)
+    {
+        Print("Entering Short Position");
+        EnterShort(volume, "Short Entry");
+    }
+
+    // Gestion des sorties
+    if (Position.MarketPosition == MarketPosition.Long)
+    {
+        SetProfitTarget(CalculationMode.Ticks, takeProfitTicks);
+        SetStopLoss(CalculationMode.Ticks, stopLossTicks);
+    }
+    else if (Position.MarketPosition == MarketPosition.Short)
+    {
+        SetProfitTarget(CalculationMode.Ticks, takeProfitTicks);
+        SetStopLoss(CalculationMode.Ticks, stopLossTicks);
+    }
+
+    // Gestion des limites journalières
+    if (dailyProfit >= dailyProfitLimit || dailyLoss >= dailyLossLimit || consecutiveLosses >= maxConsecutiveLosses)
+    {
+        // Arrêter de trader pour le reste de la journée
+        return;
+    }
+
+    // Gestion des news
+    if (EnableNewsFilter)
+    {
+        DateTime now = Time[0];
+        foreach (string newsTime in newsTimes)
+        {
+            DateTime newsDateTime = DateTime.Parse(newsTime);
+            if ((now >= newsDateTime.AddMinutes(-stopTradingBeforeNewsMinutes) && now <= newsDateTime) ||
+                (now >= newsDateTime && now <= newsDateTime.AddMinutes(closePositionBeforeNewsMinutes)))
+            {
+                // Clôturer les positions si proche des annonces
+                if (Position.MarketPosition != MarketPosition.Flat)
+                {
+                    ExitLong("Exit Long", "Long Entry");
+                    ExitShort("Exit Short", "Short Entry");
+                }
+                // Arrêter de trader pendant la période des annonces
+                return;
+            }
+        }
+    }
+}
+	
+		
+/*
+//Ajoutez des Print statements pour chaque condition
+	protected override void OnBarUpdate()
+{
+    if (CurrentBar < BarsRequiredToTrade)
+        return;
+
+    // Imprimer les valeurs pour debug
+    Print("Close[0]: " + Close[0]);
+    Print("fastSuperTrend.UpTrend[0]: " + fastSuperTrend.UpTrend[0]);
+    Print("middleSuperTrend.UpTrend[0]: " + middleSuperTrend.UpTrend[0]);
+    Print("slowSuperTrend.UpTrend[0]: " + slowSuperTrend.UpTrend[0]);
+    Print("fastStochastics.D[0]: " + fastStochastics.D[0]);
+    Print("ema[0]: " + ema[0]);
+
+    // Conditions d'entrée pour achat
+    bool longCondition1 = Close[0] > fastSuperTrend.UpTrend[0] 
+                          && Close[0] > middleSuperTrend.UpTrend[0] 
+                          && fastStochastics.D[0] < 20 
+                          && Close[0] > ema[0];
+    bool longCondition2 = Close[0] > fastSuperTrend.UpTrend[0] 
+                          && Close[0] > middleSuperTrend.UpTrend[0] 
+                          && CrossAbove(Close, slowSuperTrend.UpTrend, 1);
+
+    // Imprimer les résultats des conditions
+    Print("longCondition1: " + longCondition1);
+    Print("longCondition2: " + longCondition2);
+
+    // Entrée en position longue
+    if ((longCondition1 || longCondition2) && Position.MarketPosition != MarketPosition.Long)
+    {
+        Print("Entering Long Position");
+        EnterLong(volume, "Long Entry");
+    }
+
+    // Conditions d'entrée pour vente
+    bool shortCondition1 = Close[0] < fastSuperTrend.DownTrend[0] 
+                           && Close[0] < middleSuperTrend.DownTrend[0] 
+                           && fastStochastics.D[0] > 80 
+                           && Close[0] < ema[0];
+    bool shortCondition2 = Close[0] < fastSuperTrend.DownTrend[0] 
+                           && Close[0] < middleSuperTrend.DownTrend[0] 
+                           && CrossBelow(Close, slowSuperTrend.DownTrend, 1);
+
+    // Imprimer les résultats des conditions de vente
+    Print("shortCondition1: " + shortCondition1);
+    Print("shortCondition2: " + shortCondition2);
+
+    // Entrée en position courte
+    if ((shortCondition1 || shortCondition2) && Position.MarketPosition != MarketPosition.Short)
+    {
+        Print("Entering Short Position");
+        EnterShort(volume, "Short Entry");
+    }
+
+    // Gestion des sorties
+    if (Position.MarketPosition == MarketPosition.Long)
+    {
+        SetProfitTarget(CalculationMode.Ticks, takeProfitTicks);
+        SetStopLoss(CalculationMode.Ticks, stopLossTicks);
+    }
+    else if (Position.MarketPosition == MarketPosition.Short)
+    {
+        SetProfitTarget(CalculationMode.Ticks, takeProfitTicks);
+        SetStopLoss(CalculationMode.Ticks, stopLossTicks);
+    }
+
+    // Gestion des limites journalières
+    if (dailyProfit >= dailyProfitLimit || dailyLoss >= dailyLossLimit || consecutiveLosses >= maxConsecutiveLosses)
+    {
+        // Arrêter de trader pour le reste de la journée
+        return;
+    }
+
+    // Gestion des news
+    if (EnableNewsFilter)
+    {
+        DateTime now = Time[0];
+        foreach (string newsTime in newsTimes)
+        {
+            DateTime newsDateTime = DateTime.Parse(newsTime);
+            if ((now >= newsDateTime.AddMinutes(-stopTradingBeforeNewsMinutes) && now <= newsDateTime) ||
+                (now >= newsDateTime && now <= newsDateTime.AddMinutes(closePositionBeforeNewsMinutes)))
+            {
+                // Clôturer les positions si proche des annonces
+                if (Position.MarketPosition != MarketPosition.Flat)
+                {
+                    ExitLong("Exit Long", "Long Entry");
+                    ExitShort("Exit Short", "Short Entry");
+                }
+                // Arrêter de trader pendant la période des annonces
+                return;
+            }
+        }
+    }
+}
+*/	
+		
+		
+/*
+	protected override void OnBarUpdate()
+	{
+		{
+	    Print("Volume: " + Volume);
+	    Print("TakeProfitTicks: " + TakeProfitTicks);
+	    Print("StopLossTicks: " + StopLossTicks);
+	    if (CurrentBar < BarsRequiredToTrade)
+	        return;
+
+	    // Conditions d'entrée pour achat
+	    bool longCondition1 = Close[0] > fastSuperTrend.UpTrend[0] && Close[0] > middleSuperTrend.UpTrend[0] && fastStochastics.D[0] < 20 && Close[0] > ema[0];
+	    bool longCondition2 = Close[0] > fastSuperTrend.UpTrend[0] && Close[0] > middleSuperTrend.UpTrend[0] && CrossAbove(Close, slowSuperTrend.UpTrend, 1);
+
+	    // Conditions d'entrée pour vente
+	    bool shortCondition1 = Close[0] < fastSuperTrend.DownTrend[0] && Close[0] < middleSuperTrend.DownTrend[0] && fastStochastics.D[0] > 80 && Close[0] < ema[0];
+	    bool shortCondition2 = Close[0] < fastSuperTrend.DownTrend[0] && Close[0] < middleSuperTrend.DownTrend[0] && CrossBelow(Close, slowSuperTrend.DownTrend, 1);
+
+	    // Entrée en position longue
+	    if ((longCondition1 || longCondition2) && Position.MarketPosition != MarketPosition.Long)
+	    {
+	        EnterLong(volume, "Long Entry");
+	    }
+
+	    // Entrée en position courte
+	    if ((shortCondition1 || shortCondition2) && Position.MarketPosition != MarketPosition.Short)
+	    {
+	        EnterShort(volume, "Short Entry");
+	    }
+
+	    // Gestion des sorties
+	    if (Position.MarketPosition == MarketPosition.Long)
+	    {
+	        SetProfitTarget(CalculationMode.Ticks, takeProfitTicks);
+	        SetStopLoss(CalculationMode.Ticks, stopLossTicks);
+	    }
+	    else if (Position.MarketPosition == MarketPosition.Short)
+	    {
+	        SetProfitTarget(CalculationMode.Ticks, takeProfitTicks);
+	        SetStopLoss(CalculationMode.Ticks, stopLossTicks);
+	    }
+
+	    // Gestion des limites journalières
+	    if (dailyProfit >= dailyProfitLimit || dailyLoss >= dailyLossLimit || consecutiveLosses >= maxConsecutiveLosses)
+	    {
+	        // Arrêter de trader pour le reste de la journée
+	        return;
+	    }
+
+	    // Gestion des news
+	    if (EnableNewsFilter)
+	    {
+	        DateTime now = Time[0];
+	        foreach (string newsTime in newsTimes)
+	        {
+	            DateTime newsDateTime = DateTime.Parse(newsTime);
+	            if ((now >= newsDateTime.AddMinutes(-stopTradingBeforeNewsMinutes) && now <= newsDateTime) ||
+	                (now >= newsDateTime && now <= newsDateTime.AddMinutes(closePositionBeforeNewsMinutes)))
+	            {
+	                // Clôturer les positions si proche des annonces
+	                if (Position.MarketPosition != MarketPosition.Flat)
+	                {
+	                    ExitLong("Exit Long", "Long Entry");
+	                    ExitShort("Exit Short", "Short Entry");
+	                }
+	                // Arrêter de trader pendant la période des annonces
+	                return;
+	            }
+	        }
+	    }
+	}
+}
+*/
+        #region Properties
+        [NinjaScriptProperty]
+        [Display(Name = "Fast TSS Multiplier", Order = 1, GroupName = "Parameters")]
+        public double FastMultiplier
+        { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "EMA Period", Order = 2, GroupName = "Parameters")]
+        public int EmaPeriod
+        { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name = "Take Profit Ticks", Order = 3, GroupName = "Parameters")]
+		public int TakeProfitTicks
+		{ 
+		    get { return takeProfitTicks; }
+		    set { takeProfitTicks = value; }
+		}
+
+		[NinjaScriptProperty]
+		[Display(Name = "Stop Loss Ticks", Order = 4, GroupName = "Parameters")]
+		public int StopLossTicks
+		{ 
+		    get { return stopLossTicks; }
+		    set { stopLossTicks = value; }
+		}
+
+        [NinjaScriptProperty]
+        [Display(Name = "Volume", Order = 5, GroupName = "Parameters")]
+        public int Volume
+        { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Daily Profit Limit", Order = 6, GroupName = "Risk Management")]
+        public double DailyProfitLimit
+        { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Daily Loss Limit", Order = 7, GroupName = "Risk Management")]
+        public double DailyLossLimit
+        { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Max Consecutive Losses", Order = 8, GroupName = "Risk Management")]
+        public int MaxConsecutiveLosses
+        { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Double Position On Loss", Order = 9, GroupName = "Risk Management")]
+        public bool DoublePositionOnLoss
+        { get; set; }
+		
+		[NinjaScriptProperty]
+		[Display(Name = "Enable News Filter", Order = 14, GroupName = "Risk Management")]
+		public bool EnableNewsFilter
+		{ get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "News Times", Order = 10, GroupName = "Risk Management")]
+        public string[] NewsTimes
+        { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Stop Trading Before News (Minutes)", Order = 11, GroupName = "Risk Management")]
+        public int StopTradingBeforeNewsMinutes
+        { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Close Position Before News (Minutes)", Order = 12, GroupName = "Risk Management")]
+        public int ClosePositionBeforeNewsMinutes
+        { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Alert If Double Lot", Order = 13, GroupName = "Risk Management")]
+        public bool AlertIfDoubleLot
+        { get; set; }
+        #endregion
+    }
+}
